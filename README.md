@@ -2,7 +2,9 @@
 
 Claude code with FREE Deepseek API
 Powered by chat.deepseek.com 
+
 Thx github.com/xtekky/deepseek4free for PoW bypass
+
 by t.me/noxad
 
 - `deepapi/` - anthropic-совместимый прокси для claude code
