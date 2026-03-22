@@ -38,3 +38,6 @@ by t.me/noxad
 - `новый чат`
 - `новый`
 - `нью`
+
+## Bug reports
+Если вы столкнулись с багом или у вас есть предложение по улучшению - сообщите в https://github.com/wetakush/deepseek-cli/issues
