@@ -11,6 +11,10 @@ by t.me/noxad
 - `run_claude_deepseek.bat` - запускает локальное апи и claude code через это же api
 - `deepapi.env.example.bat` - шаблон cfg
 
+## ATTENTION
+Используйте аккаунты, которые вам не жалко потерять (возможна блокировка)
+Проект создает множество чатов на chat.deepseek.com для корректной работы
+
 ## что нужно
 
 - windows
