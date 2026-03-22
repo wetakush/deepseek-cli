@@ -1,0 +1,23 @@
+﻿[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepseek-cli-agent"
+version = "0.1.0"
+description = "Windows-first DeepSeek CLI agent in Python"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27,<0.29",
+    "rich>=13.7,<15",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+]
+
+[project.scripts]
+deepseek-cli = "deepseek_cli.app:main"
+deepapi = "deepapi.server:main"
+
+[tool.setuptools.packages.find]
+include = ["deepseek_cli*", "deepapi*"]
