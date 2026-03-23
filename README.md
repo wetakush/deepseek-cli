@@ -1,19 +1,18 @@
 ﻿# Deepseek-CLI
 
-Claude code with FREE Deepseek API
-Powered by chat.deepseek.com 
+Claude code with free Deepseek API
+Powered by chat.deepseek.com
 
 Thx github.com/xtekky/deepseek4free for PoW bypass
 
 by t.me/noxad
 
 - `deepapi/` - anthropic-совместимый прокси для claude code
-- `run_claude_deepseek.bat` - запускает локальное апи и claude code через это же api
+- `run_claude_deepseek.bat` - запускает локальное api и claude code через это же api
 - `deepapi.env.example.bat` - шаблон cfg
 
-## ATTENTION
-Используйте аккаунты, которые вам не жалко потерять (возможна блокировка)
-Проект создает множество чатов на chat.deepseek.com для корректной работы
+## attention
+используйте аккаунты, которые вам не жалко потерять, возможна блокировка
 
 ## что нужно
 
@@ -26,13 +25,27 @@ by t.me/noxad
 ## запуск
 
 1. скопируй `deepapi.env.example.bat` в `deepapi.env.bat`
-2. впиши в `deepapi.env.bat` свои значения `DEEPSEEK_TOKEN` и `DEEPSEEK_COOKIE`
+2. впиши в `deepapi.env.bat` свои `DEEPSEEK_TOKEN` и `DEEPSEEK_COOKIE`
 3. запусти `run_claude_deepseek.bat`
-4. батник сам установит зависимости, поднимет локальный прокси и запустит claude code
+4. батник спросит модель и thinking mode, потом поднимет прокси и стартанет `claude`
 
-## как работает новый чат
+## доступные модели
 
-прокси хранит несколько deepseek-сессий и старается матчить их по истории сообщений
+- `deepseek-chat`
+- `deepseek-reasoner`
+- `deepseek-chat-search`
+- `deepseek-reasoner-search`
+- старый `deepseek-chat-web` тоже поддержан как legacy-конфиг
+
+## важное про `/model`
+
+- меню `/model` внутри `claude code` может по-прежнему показывать sonnet/opus/haiku, потому что это их локальный ui
+- но батник запускает `claude` с `--model <выбранная_модель>`, так что реально уходит именно выбранный deepseek-профиль
+- клиентские override для `thinking` и `search` по умолчанию выключены, чтобы `deepseek-chat` не улетал в think сам по себе
+
+## новый чат
+
+прокси хранит несколько deepseek-сессий и матчится по истории сообщений
 
 если хочешь явно создать новый deepseek chat, напиши в claude code одно из слов:
 
@@ -43,5 +56,5 @@ by t.me/noxad
 - `новый`
 - `нью`
 
-## Bug reports
-Если вы столкнулись с багом или у вас есть предложение по улучшению - сообщите в https://github.com/wetakush/deepseek-cli/issues
+## bug reports
+если словил баг или есть предложение по улучшению - пиши в https://github.com/wetakush/deepseek-cli/issues

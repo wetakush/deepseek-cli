@@ -11,7 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .bridge import AnthropicBlock, AnthropicBridge
-from .config import ProxyConfig, load_config
+from .config import DeepSeekModelProfile, ProxyConfig, load_config
 from .deepseek_client import DeepSeekCompletion, DeepSeekWebClient
 
 
@@ -78,33 +78,35 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, Any]:
         registry: ConversationRegistry = app.state.registry
+        default_profile = runtime.default_model_profile()
         return {
             "ok": True,
             "provider": "chat.deepseek.com",
-            "default_model": runtime.default_model,
+            "default_model": default_profile.id,
+            "default_model_requested": runtime.default_model,
+            "default_thinking_enabled": default_profile.thinking_enabled,
+            "default_search_enabled": default_profile.search_enabled,
+            "allow_client_thinking_override": runtime.deepseek.allow_client_thinking_override,
+            "allow_client_search_override": runtime.deepseek.allow_client_search_override,
+            "stream_chunk_size": runtime.deepseek.stream_chunk_size,
+            "available_models": [profile.id for profile in runtime.model_catalog],
             "tracked_conversations": len(registry.states),
         }
 
     @app.get("/v1/models")
     def list_models() -> dict[str, Any]:
-        models = [
-            {
-                "id": runtime.default_model,
-                "type": "model",
-                "display_name": runtime.default_model,
-            },
-            {
-                "id": "deepseek-chat-web",
-                "type": "model",
-                "display_name": "deepseek-chat-web",
-            },
-        ]
+        models = [_model_object(profile) for profile in runtime.model_catalog]
         return {
             "data": models,
             "has_more": False,
             "first_id": models[0]["id"],
             "last_id": models[-1]["id"],
         }
+
+    @app.get("/v1/models/{model_id}")
+    def get_model(model_id: str):
+        profile = runtime.resolve_model(model_id)
+        return _model_object(profile)
 
     @app.post("/v1/messages/count_tokens")
     async def count_tokens(
@@ -126,7 +128,7 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
 
         payload = await request.json()
         tools = payload.get("tools") or []
-        model_name = payload.get("model") or runtime.default_model
+        model_profile, thinking_enabled, search_enabled = _resolve_request_model(runtime, payload)
         registry: ConversationRegistry = app.state.registry
         entries = bridge.render_entries(payload)
 
@@ -138,14 +140,18 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
                 return _error_response(502, f"deepseek request failed: {exc}")
             content_blocks = [AnthropicBlock(type="text", text="started a new deepseek chat")]
             message = _message_object(
-                model_name=model_name,
+                model_name=model_profile.id,
                 blocks=content_blocks,
                 stop_reason="end_turn",
                 usage={"input_tokens": 1, "output_tokens": 6},
             )
             state.history_entries = entries + [bridge.assistant_history_entry(content_blocks)]
             state.last_message = message
-            return _response_for_request(payload, message)
+            return _response_for_request(
+                payload,
+                message,
+                stream_chunk_size=runtime.deepseek.stream_chunk_size,
+            )
 
         state = registry.find_best(entries)
         if state is None:
@@ -164,7 +170,11 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
         continuation = bool(state.history_entries)
 
         if not prompt_entries and state.last_message is not None:
-            return _response_for_request(payload, state.last_message)
+            return _response_for_request(
+                payload,
+                state.last_message,
+                stream_chunk_size=runtime.deepseek.stream_chunk_size,
+            )
 
         prompt = bridge.build_prompt(payload, entries=prompt_entries, continuation=continuation)
 
@@ -173,8 +183,8 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
                 prompt,
                 session_id=state.chat_session_id,
                 parent_message_id=state.parent_message_id,
-                thinking_enabled=runtime.deepseek.thinking_enabled,
-                search_enabled=runtime.deepseek.search_enabled,
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
             )
         except Exception as exc:
             return _error_response(502, f"deepseek request failed: {exc}")
@@ -185,7 +195,7 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
             "output_tokens": max(1, len(completion.text) // 4) if completion.text else 1,
         }
         message = _message_object(
-            model_name=model_name,
+            model_name=model_profile.id,
             blocks=content_blocks,
             stop_reason=stop_reason,
             usage=usage,
@@ -196,19 +206,113 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
         state.history_entries = entries + [bridge.assistant_history_entry(content_blocks)]
         state.last_message = message
         registry.activate(state)
-        return _response_for_request(payload, message)
+        return _response_for_request(
+            payload,
+            message,
+            stream_chunk_size=runtime.deepseek.stream_chunk_size,
+        )
 
     return app
 
 
-def _response_for_request(payload: dict[str, Any], message: dict[str, Any]):
+def _response_for_request(
+    payload: dict[str, Any],
+    message: dict[str, Any],
+    *,
+    stream_chunk_size: int,
+):
     if payload.get("stream"):
         return StreamingResponse(
-            _stream_message_events(message),
+            _stream_message_events(message, chunk_size=stream_chunk_size),
             media_type="text/event-stream",
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
     return JSONResponse(message)
+
+
+def _model_object(profile: DeepSeekModelProfile) -> dict[str, Any]:
+    return {
+        "id": profile.id,
+        "type": "model",
+        "display_name": profile.display_name,
+        "provider": "deepseek",
+        "capabilities": {
+            "thinking": profile.thinking_enabled,
+            "search": profile.search_enabled,
+        },
+    }
+
+
+def _resolve_request_model(
+    config: ProxyConfig,
+    payload: dict[str, Any],
+) -> tuple[DeepSeekModelProfile, bool, bool]:
+    base_profile = config.resolve_model(payload.get("model"))
+    thinking_override = None
+    search_override = None
+
+    if config.deepseek.allow_client_thinking_override:
+        thinking_override = _thinking_override_from_payload(payload)
+    if config.deepseek.allow_client_search_override:
+        search_override = _search_override_from_payload(payload)
+
+    if thinking_override is None and search_override is None:
+        return base_profile, base_profile.thinking_enabled, base_profile.search_enabled
+
+    effective_thinking = (
+        base_profile.thinking_enabled if thinking_override is None else thinking_override
+    )
+    effective_search = base_profile.search_enabled if search_override is None else search_override
+    resolved_profile = config.resolve_model_by_flags(
+        thinking_enabled=effective_thinking,
+        search_enabled=effective_search,
+        fallback=base_profile,
+    )
+    return resolved_profile, effective_thinking, effective_search
+
+
+def _thinking_override_from_payload(payload: dict[str, Any]) -> bool | None:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("deepseek_thinking", "thinking_enabled"):
+            parsed = _parse_toggle(metadata.get(key))
+            if parsed is not None:
+                return parsed
+    return _parse_toggle(payload.get("thinking"))
+
+
+def _search_override_from_payload(payload: dict[str, Any]) -> bool | None:
+    direct = _parse_toggle(payload.get("search_enabled"))
+    if direct is not None:
+        return direct
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("deepseek_search", "search_enabled"):
+            parsed = _parse_toggle(metadata.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _parse_toggle(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled", "enable"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "disable"}:
+            return False
+        return None
+    if isinstance(value, dict):
+        toggle_type = str(value.get("type", "")).strip().lower()
+        if toggle_type in {"enabled", "enable", "on"}:
+            return True
+        if toggle_type in {"disabled", "disable", "off"}:
+            return False
+        if "enabled" in value and isinstance(value.get("enabled"), bool):
+            return bool(value["enabled"])
+    return None
 
 
 def _common_prefix_len(left: list[str], right: list[str]) -> int:
@@ -264,7 +368,7 @@ def _message_object(
     }
 
 
-def _stream_message_events(message: dict[str, Any]) -> Iterable[str]:
+def _stream_message_events(message: dict[str, Any], *, chunk_size: int) -> Iterable[str]:
     initial_message = dict(message)
     initial_message["content"] = []
     yield _sse("message_start", {"type": "message_start", "message": initial_message})
@@ -281,14 +385,15 @@ def _stream_message_events(message: dict[str, Any]) -> Iterable[str]:
                 },
             )
             text = block.get("text", "")
-            yield _sse(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": index,
-                    "delta": {"type": "text_delta", "text": text},
-                },
-            )
+            for part in _split_text(text, size=chunk_size):
+                yield _sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": index,
+                        "delta": {"type": "text_delta", "text": part},
+                    },
+                )
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": index})
             continue
 
@@ -334,10 +439,40 @@ def _stream_message_events(message: dict[str, Any]) -> Iterable[str]:
     yield _sse("message_stop", {"type": "message_stop"})
 
 
-def _split_text(text: str, size: int = 160) -> Iterable[str]:
+def _split_text(text: str, size: int = 96) -> Iterable[str]:
     if not text:
         return []
-    return [text[index : index + size] for index in range(0, len(text), size)]
+    if len(text) <= size:
+        return [text]
+
+    parts: list[str] = []
+    start = 0
+    whitespace = " \n\r\t"
+    soft_breaks = ",.;:!?)]}"
+
+    while start < len(text):
+        end = min(start + size, len(text))
+        if end >= len(text):
+            parts.append(text[start:])
+            break
+
+        chunk = text[start:end]
+        cut = -1
+        for marker in whitespace + soft_breaks:
+            pos = chunk.rfind(marker)
+            if pos > cut:
+                cut = pos
+
+        if cut <= 0:
+            parts.append(chunk)
+            start = end
+            continue
+
+        cut += 1
+        parts.append(text[start : start + cut])
+        start += cut
+
+    return parts
 
 
 def _sse(event: str, payload: dict[str, Any]) -> str:

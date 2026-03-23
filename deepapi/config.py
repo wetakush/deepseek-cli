@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
@@ -58,8 +58,28 @@ class DeepSeekConfig:
     timeout_seconds: int
     thinking_enabled: bool
     search_enabled: bool
+    allow_client_thinking_override: bool
+    allow_client_search_override: bool
+    stream_chunk_size: int
     node_command: str
     headers: DeepSeekHeaders = field(default_factory=DeepSeekHeaders)
+
+
+@dataclass(frozen=True, slots=True)
+class DeepSeekModelProfile:
+    id: str
+    display_name: str
+    thinking_enabled: bool
+    search_enabled: bool
+    aliases: tuple[str, ...] = ()
+
+    def matches(self, requested_model: str) -> bool:
+        model = requested_model.strip().lower()
+        if not model:
+            return False
+        if model == self.id.lower():
+            return True
+        return model in {alias.lower() for alias in self.aliases}
 
 
 @dataclass(slots=True)
@@ -70,9 +90,112 @@ class ProxyConfig:
     api_key: str
     default_model: str
     deepseek: DeepSeekConfig
+    model_catalog: tuple[DeepSeekModelProfile, ...]
+
+    def default_model_profile(self) -> DeepSeekModelProfile:
+        return self.resolve_model(self.default_model)
+
+    def resolve_model(self, requested_model: str | None) -> DeepSeekModelProfile:
+        candidate = (requested_model or "").strip()
+        if candidate:
+            for profile in self.model_catalog:
+                if profile.matches(candidate):
+                    return profile
+        return self.model_catalog[0]
+
+    def resolve_model_by_flags(
+        self,
+        *,
+        thinking_enabled: bool,
+        search_enabled: bool,
+        fallback: DeepSeekModelProfile | None = None,
+    ) -> DeepSeekModelProfile:
+        for profile in self.model_catalog:
+            if (
+                profile.thinking_enabled == thinking_enabled
+                and profile.search_enabled == search_enabled
+            ):
+                return profile
+        return fallback or self.default_model_profile()
+
+
+def _build_model_catalog(
+    *,
+    default_model: str,
+    thinking_enabled: bool,
+    search_enabled: bool,
+) -> tuple[DeepSeekModelProfile, ...]:
+    profiles = [
+        DeepSeekModelProfile(
+            id="deepseek-chat",
+            display_name="deepseek chat",
+            thinking_enabled=False,
+            search_enabled=False,
+            aliases=(
+                "claude-sonnet-4-20250514",
+                "claude-3-7-sonnet-20250219",
+                "claude-3-5-sonnet-20241022",
+                "sonnet",
+                "claude-haiku-4-5-20251001",
+                "claude-3-5-haiku-20241022",
+                "haiku",
+            ),
+        ),
+        DeepSeekModelProfile(
+            id="deepseek-reasoner",
+            display_name="deepseek reasoner",
+            thinking_enabled=True,
+            search_enabled=False,
+            aliases=(
+                "claude-opus-4-1-20250805",
+                "claude-opus-4-20250514",
+                "claude-opus-3-20240229",
+                "opus",
+            ),
+        ),
+        DeepSeekModelProfile(
+            id="deepseek-chat-search",
+            display_name="deepseek chat + search",
+            thinking_enabled=False,
+            search_enabled=True,
+        ),
+        DeepSeekModelProfile(
+            id="deepseek-reasoner-search",
+            display_name="deepseek reasoner + search",
+            thinking_enabled=True,
+            search_enabled=True,
+        ),
+    ]
+
+    custom_default = default_model.strip()
+    has_explicit_default = any(profile.matches(custom_default) for profile in profiles)
+    if custom_default and not has_explicit_default:
+        profiles.insert(
+            0,
+            DeepSeekModelProfile(
+                id=custom_default,
+                display_name=f"{custom_default} (custom)",
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
+                aliases=("deepseek-chat-web",) if custom_default != "deepseek-chat-web" else (),
+            ),
+        )
+    elif custom_default == "deepseek-chat-web":
+        profiles.insert(
+            0,
+            DeepSeekModelProfile(
+                id="deepseek-chat-web",
+                display_name="deepseek web (legacy)",
+                thinking_enabled=thinking_enabled,
+                search_enabled=search_enabled,
+            ),
+        )
+
+    return tuple(profiles)
 
 
 def load_config() -> ProxyConfig:
+    default_model = os.getenv("DEEPAPI_MODEL", "deepseek-reasoner").strip() or "deepseek-reasoner"
     deepseek = DeepSeekConfig(
         base_url=os.getenv("DEEPSEEK_BASE_URL", "https://chat.deepseek.com").rstrip("/"),
         token=os.getenv("DEEPSEEK_TOKEN", "").strip(),
@@ -80,6 +203,11 @@ def load_config() -> ProxyConfig:
         timeout_seconds=_env_int("DEEPSEEK_TIMEOUT_SECONDS", 180),
         thinking_enabled=_env_bool("DEEPAPI_THINKING_ENABLED", True),
         search_enabled=_env_bool("DEEPAPI_SEARCH_ENABLED", True),
+        allow_client_thinking_override=_env_bool(
+            "DEEPAPI_ALLOW_CLIENT_THINKING_OVERRIDE", False
+        ),
+        allow_client_search_override=_env_bool("DEEPAPI_ALLOW_CLIENT_SEARCH_OVERRIDE", False),
+        stream_chunk_size=max(24, _env_int("DEEPAPI_STREAM_CHUNK_SIZE", 96)),
         node_command=os.getenv("DEEPAPI_NODE_COMMAND", "node").strip() or "node",
     )
     return ProxyConfig(
@@ -87,7 +215,11 @@ def load_config() -> ProxyConfig:
         port=_env_int("DEEPAPI_PORT", 8080),
         log_level=os.getenv("DEEPAPI_LOG_LEVEL", "info").strip() or "info",
         api_key=os.getenv("DEEPAPI_API_KEY", "deepapi-local").strip() or "deepapi-local",
-        default_model=os.getenv("DEEPAPI_MODEL", "deepseek-chat-web").strip()
-        or "deepseek-chat-web",
+        default_model=default_model,
         deepseek=deepseek,
+        model_catalog=_build_model_catalog(
+            default_model=default_model,
+            thinking_enabled=deepseek.thinking_enabled,
+            search_enabled=deepseek.search_enabled,
+        ),
     )

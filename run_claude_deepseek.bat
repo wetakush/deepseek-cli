@@ -1,5 +1,5 @@
 @echo off
-setlocal enableextensions
+setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
@@ -19,8 +19,15 @@ if not defined DEEPAPI_PORT set "DEEPAPI_PORT=8080"
 if not defined DEEPAPI_API_KEY set "DEEPAPI_API_KEY=deepapi-local"
 if not defined ANTHROPIC_BASE_URL set "ANTHROPIC_BASE_URL=http://%DEEPAPI_HOST%:%DEEPAPI_PORT%"
 if not defined ANTHROPIC_AUTH_TOKEN set "ANTHROPIC_AUTH_TOKEN=%DEEPAPI_API_KEY%"
-if not defined DEEPAPI_MODEL set "DEEPAPI_MODEL=deepseek-chat-web"
+if not defined DEEPAPI_MODEL set "DEEPAPI_MODEL=deepseek-reasoner"
+if not defined DEEPAPI_ALLOW_CLIENT_THINKING_OVERRIDE set "DEEPAPI_ALLOW_CLIENT_THINKING_OVERRIDE=false"
+if not defined DEEPAPI_ALLOW_CLIENT_SEARCH_OVERRIDE set "DEEPAPI_ALLOW_CLIENT_SEARCH_OVERRIDE=false"
+if not defined DEEPAPI_STREAM_CHUNK_SIZE set "DEEPAPI_STREAM_CHUNK_SIZE=96"
 set "PYTHONUTF8=1"
+
+call :choose_model
+call :apply_model_defaults
+call :choose_thinking
 
 set "PYTHON_CMD="
 where py >nul 2>nul
@@ -71,7 +78,70 @@ if not defined READY (
   exit /b 1
 )
 
-echo [deepapi] startuyu claude s deepseek proxy
-call claude %*
+set "RAW_ARGS=%*"
+set "CLAUDE_MODEL_ARG=--model %DEEPAPI_MODEL%"
+echo(%RAW_ARGS% | findstr /i /c:"--model " /c:"--model=" >nul && set "CLAUDE_MODEL_ARG="
+
+echo [deepapi] startuyu claude s model %DEEPAPI_MODEL%, thinking=%DEEPAPI_THINKING_ENABLED%, search=%DEEPAPI_SEARCH_ENABLED%
+call claude %CLAUDE_MODEL_ARG% %*
 set "EXIT_CODE=%ERRORLEVEL%"
 exit /b %EXIT_CODE%
+
+:choose_model
+echo.
+echo [deepapi] vyberi model
+ echo   1. deepseek-reasoner (thinking)
+ echo   2. deepseek-chat
+ echo   3. deepseek-reasoner-search (thinking + search)
+ echo   4. deepseek-chat-search (search)
+ echo   enter. ostavit %DEEPAPI_MODEL%
+ echo   ili vvedi lyuboy drugoy model id vruchnuyu
+set "MODEL_CHOICE="
+set /p MODEL_CHOICE="model^> "
+if not defined MODEL_CHOICE exit /b 0
+if /i "%MODEL_CHOICE%"=="1" set "DEEPAPI_MODEL=deepseek-reasoner" & exit /b 0
+if /i "%MODEL_CHOICE%"=="2" set "DEEPAPI_MODEL=deepseek-chat" & exit /b 0
+if /i "%MODEL_CHOICE%"=="3" set "DEEPAPI_MODEL=deepseek-reasoner-search" & exit /b 0
+if /i "%MODEL_CHOICE%"=="4" set "DEEPAPI_MODEL=deepseek-chat-search" & exit /b 0
+set "DEEPAPI_MODEL=%MODEL_CHOICE%"
+exit /b 0
+
+:apply_model_defaults
+if /i "%DEEPAPI_MODEL%"=="deepseek-reasoner" (
+  set "DEEPAPI_THINKING_ENABLED=true"
+  set "DEEPAPI_SEARCH_ENABLED=false"
+  exit /b 0
+)
+if /i "%DEEPAPI_MODEL%"=="deepseek-chat" (
+  set "DEEPAPI_THINKING_ENABLED=false"
+  set "DEEPAPI_SEARCH_ENABLED=false"
+  exit /b 0
+)
+if /i "%DEEPAPI_MODEL%"=="deepseek-reasoner-search" (
+  set "DEEPAPI_THINKING_ENABLED=true"
+  set "DEEPAPI_SEARCH_ENABLED=true"
+  exit /b 0
+)
+if /i "%DEEPAPI_MODEL%"=="deepseek-chat-search" (
+  set "DEEPAPI_THINKING_ENABLED=false"
+  set "DEEPAPI_SEARCH_ENABLED=true"
+  exit /b 0
+)
+if not defined DEEPAPI_THINKING_ENABLED set "DEEPAPI_THINKING_ENABLED=true"
+if not defined DEEPAPI_SEARCH_ENABLED set "DEEPAPI_SEARCH_ENABLED=true"
+exit /b 0
+
+:choose_thinking
+echo.
+echo [deepapi] vyberi thinking mode
+ echo   1. auto po modeli, seichas %DEEPAPI_THINKING_ENABLED%
+ echo   2. vklyuchit thinking
+ echo   3. vyklyuchit thinking
+ echo   enter. ostavit kak est
+set "THINKING_CHOICE="
+set /p THINKING_CHOICE="thinking^> "
+if not defined THINKING_CHOICE exit /b 0
+if /i "%THINKING_CHOICE%"=="1" exit /b 0
+if /i "%THINKING_CHOICE%"=="2" set "DEEPAPI_THINKING_ENABLED=true" & exit /b 0
+if /i "%THINKING_CHOICE%"=="3" set "DEEPAPI_THINKING_ENABLED=false" & exit /b 0
+exit /b 0
