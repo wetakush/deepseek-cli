@@ -5,8 +5,6 @@ Powered by chat.deepseek.com
 
 Thx github.com/xtekky/deepseek4free for PoW bypass
 
-by t.me/noxad
-
 - `deepapi/` - anthropic-совместимый прокси для claude code
 - `run_claude_deepseek.bat` - запускает локальное api и claude code через это же api
 - `deepapi.env.example.bat` - шаблон cfg
@@ -31,18 +29,15 @@ by t.me/noxad
 
 ## доступные модели
 
-- `deepseek-chat`
-- `deepseek-reasoner`
-- `deepseek-chat-search`
-- `deepseek-reasoner-search`
-- старый `deepseek-chat-web` тоже поддержан как legacy-конфиг
-
+- `deepseek-v4`
+- `deepseek-v4-reasoner`
+- `deepseek-v4-search`
+- `deepseek-v4-reasoner-search`
+- 
 ## важное про `/model`
 
 - меню `/model` внутри `claude code` может по-прежнему показывать sonnet/opus/haiku, потому что это их локальный ui
 - но батник запускает `claude` с `--model <выбранная_модель>`, так что реально уходит именно выбранный deepseek-профиль
-- клиентские override для `thinking` и `search` по умолчанию выключены, чтобы `deepseek-chat` не улетал в think сам по себе
-
 ## новый чат
 
 прокси хранит несколько deepseek-сессий и матчится по истории сообщений
