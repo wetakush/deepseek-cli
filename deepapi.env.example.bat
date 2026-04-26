@@ -6,9 +6,11 @@ set "DEEPSEEK_COOKIE="
 set "DEEPAPI_API_KEY=deepapi-local"
 set "DEEPAPI_HOST=127.0.0.1"
 set "DEEPAPI_PORT=8080"
-set "DEEPAPI_MODEL=deepseek-reasoner"
+set "DEEPAPI_MODEL=deepseek-v4"
 
 rem dostupnye modeli:
+rem deepseek-v4
+rem expert
 rem deepseek-chat
 rem deepseek-reasoner
 rem deepseek-chat-search

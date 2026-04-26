@@ -63,11 +63,11 @@ class AnthropicBridge:
         entries = entries if entries is not None else self.render_entries(request)
 
         parts = [
-            "you are serving an anthropic messages api proxy for claude code",
-            "follow the conversation exactly and stay consistent with earlier tool results",
-            "for coding tasks, default to using tools to inspect files, create files, edit files, run commands, and save actual project changes",
-            "if the user asks to build an app, script, site, calculator, bot, config, or any code artifact, do not just describe it, create or modify files through tools",
-            "only send a plain final answer after the required tool calls are done",
+            "continue the conversation naturally",
+            "reply in the user's language unless the conversation explicitly asks for another language",
+            "follow the user's most recent instruction precisely",
+            "if the user asks for exact output, return that exact output and nothing extra",
+            "stay consistent with earlier tool results and prior conversation state",
         ]
 
         if tools:
@@ -81,7 +81,7 @@ class AnthropicBridge:
                     "tool input must be valid json and match the schema as closely as possible",
                     "if you do not need a tool, respond with plain text only",
                     "never invent tool results or say you executed a tool yourself",
-                ]
+            ]
             )
             parts.append(self._tool_choice_instruction(request.get("tool_choice")))
             tool_view = [
@@ -95,12 +95,13 @@ class AnthropicBridge:
             parts.append("available tools json:")
             parts.append(json.dumps(tool_view, ensure_ascii=False, indent=2))
         else:
-            parts.append("no tools are available in this turn, answer with plain text only")
+            parts.append("no tools are available in this turn")
+            parts.append("answer with plain text only")
 
         if continuation:
-            parts.append("these are only the new conversation events since your last reply in the same chat:")
+            parts.append("these are only the new conversation events since your last reply:")
         else:
-            parts.append("this is the full conversation transcript for the current chat:")
+            parts.append("this is the full conversation transcript:")
 
         for entry in entries:
             role, _, content = entry.partition("\n")

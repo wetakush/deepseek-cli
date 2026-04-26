@@ -21,32 +21,60 @@ def _env_int(name: str, default: int) -> int:
 @dataclass(slots=True)
 class DeepSeekHeaders:
     accept: str = "*/*"
+    accept_language: str = "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
     content_type: str = "application/json"
+    origin: str = "https://chat.deepseek.com"
+    priority: str = "u=1, i"
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/146.0.0.0 Safari/537.36"
+        "Chrome/147.0.0.0 Safari/537.36"
     )
     x_app_version: str = "20241129.1"
     x_client_locale: str = "en_US"
     x_client_platform: str = "web"
-    x_client_version: str = "1.7.1"
-    sec_ch_ua: str = '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"'
+    x_client_version: str = "1.8.0"
+    sec_ch_ua: str = '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"'
+    sec_ch_ua_arch: str = '"x86"'
+    sec_ch_ua_bitness: str = '"64"'
+    sec_ch_ua_full_version: str = '"147.0.7727.102"'
+    sec_ch_ua_full_version_list: str = (
+        '"Google Chrome";v="147.0.7727.102", '
+        '"Not.A/Brand";v="8.0.0.0", '
+        '"Chromium";v="147.0.7727.102"'
+    )
     sec_ch_ua_mobile: str = "?0"
+    sec_ch_ua_model: str = '""'
     sec_ch_ua_platform: str = '"Windows"'
+    sec_ch_ua_platform_version: str = '"19.0.0"'
+    sec_fetch_dest: str = "empty"
+    sec_fetch_mode: str = "cors"
+    sec_fetch_site: str = "same-origin"
 
     def as_dict(self) -> dict[str, str]:
         return {
             "accept": self.accept,
+            "accept-language": self.accept_language,
             "content-type": self.content_type,
+            "origin": self.origin,
+            "priority": self.priority,
             "user-agent": self.user_agent,
             "x-app-version": self.x_app_version,
             "x-client-locale": self.x_client_locale,
             "x-client-platform": self.x_client_platform,
             "x-client-version": self.x_client_version,
             "sec-ch-ua": self.sec_ch_ua,
+            "sec-ch-ua-arch": self.sec_ch_ua_arch,
+            "sec-ch-ua-bitness": self.sec_ch_ua_bitness,
+            "sec-ch-ua-full-version": self.sec_ch_ua_full_version,
+            "sec-ch-ua-full-version-list": self.sec_ch_ua_full_version_list,
             "sec-ch-ua-mobile": self.sec_ch_ua_mobile,
+            "sec-ch-ua-model": self.sec_ch_ua_model,
             "sec-ch-ua-platform": self.sec_ch_ua_platform,
+            "sec-ch-ua-platform-version": self.sec_ch_ua_platform_version,
+            "sec-fetch-dest": self.sec_fetch_dest,
+            "sec-fetch-mode": self.sec_fetch_mode,
+            "sec-fetch-site": self.sec_fetch_site,
         }
 
 
@@ -71,6 +99,7 @@ class DeepSeekModelProfile:
     display_name: str
     thinking_enabled: bool
     search_enabled: bool
+    wire_model_type: str | None = None
     aliases: tuple[str, ...] = ()
 
     def matches(self, requested_model: str) -> bool:
@@ -101,6 +130,13 @@ class ProxyConfig:
             for profile in self.model_catalog:
                 if profile.matches(candidate):
                     return profile
+            return DeepSeekModelProfile(
+                id=candidate,
+                display_name=f"{candidate} (custom)",
+                thinking_enabled=self.deepseek.thinking_enabled,
+                search_enabled=self.deepseek.search_enabled,
+                wire_model_type=candidate,
+            )
         return self.model_catalog[0]
 
     def resolve_model_by_flags(
@@ -131,6 +167,7 @@ def _build_model_catalog(
             display_name="deepseek chat",
             thinking_enabled=False,
             search_enabled=False,
+            wire_model_type="default",
             aliases=(
                 "claude-sonnet-4-20250514",
                 "claude-3-7-sonnet-20250219",
@@ -146,6 +183,7 @@ def _build_model_catalog(
             display_name="deepseek reasoner",
             thinking_enabled=True,
             search_enabled=False,
+            wire_model_type="expert",
             aliases=(
                 "claude-opus-4-1-20250805",
                 "claude-opus-4-20250514",
@@ -158,12 +196,29 @@ def _build_model_catalog(
             display_name="deepseek chat + search",
             thinking_enabled=False,
             search_enabled=True,
+            wire_model_type="default",
+        ),
+        DeepSeekModelProfile(
+            id="deepseek-v4",
+            display_name="deepseek v4",
+            thinking_enabled=True,
+            search_enabled=True,
+            wire_model_type="expert",
+            aliases=("deepseek-chat-web",),
         ),
         DeepSeekModelProfile(
             id="deepseek-reasoner-search",
             display_name="deepseek reasoner + search",
             thinking_enabled=True,
             search_enabled=True,
+            wire_model_type="expert",
+        ),
+        DeepSeekModelProfile(
+            id="expert",
+            display_name="deepseek expert",
+            thinking_enabled=True,
+            search_enabled=True,
+            wire_model_type="expert",
         ),
     ]
 
@@ -177,20 +232,10 @@ def _build_model_catalog(
                 display_name=f"{custom_default} (custom)",
                 thinking_enabled=thinking_enabled,
                 search_enabled=search_enabled,
+                wire_model_type=custom_default,
                 aliases=("deepseek-chat-web",) if custom_default != "deepseek-chat-web" else (),
             ),
         )
-    elif custom_default == "deepseek-chat-web":
-        profiles.insert(
-            0,
-            DeepSeekModelProfile(
-                id="deepseek-chat-web",
-                display_name="deepseek web (legacy)",
-                thinking_enabled=thinking_enabled,
-                search_enabled=search_enabled,
-            ),
-        )
-
     return tuple(profiles)
 
 

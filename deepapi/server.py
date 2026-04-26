@@ -183,6 +183,7 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
                 prompt,
                 session_id=state.chat_session_id,
                 parent_message_id=state.parent_message_id,
+                model_type=model_profile.wire_model_type if state.parent_message_id is None else None,
                 thinking_enabled=thinking_enabled,
                 search_enabled=search_enabled,
             )

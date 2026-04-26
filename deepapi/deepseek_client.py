@@ -43,6 +43,7 @@ class DeepSeekWebClient:
         *,
         session_id: str | None = None,
         parent_message_id: int | None = None,
+        model_type: str | None = None,
         thinking_enabled: bool | None = None,
         search_enabled: bool | None = None,
     ) -> DeepSeekCompletion:
@@ -53,6 +54,7 @@ class DeepSeekWebClient:
             prompt,
             session_id=active_session_id,
             parent_message_id=parent_message_id,
+            model_type=model_type,
             thinking_enabled=thinking_enabled,
             search_enabled=search_enabled,
         ):
@@ -73,6 +75,7 @@ class DeepSeekWebClient:
         *,
         session_id: str,
         parent_message_id: int | None = None,
+        model_type: str | None = None,
         thinking_enabled: bool | None = None,
         search_enabled: bool | None = None,
     ) -> Iterable[DeepSeekChunk]:
@@ -86,6 +89,7 @@ class DeepSeekWebClient:
         payload = {
             "chat_session_id": session_id,
             "parent_message_id": parent_message_id,
+            "model_type": model_type,
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": self.config.thinking_enabled
@@ -105,13 +109,13 @@ class DeepSeekWebClient:
             headers=headers,
             json=payload,
         ) as response:
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                self._raise_api_error(response, fallback_prefix=f"deepseek completion failed ({exc})")
             content_type = response.headers.get("content-type", "")
             if "text/event-stream" not in content_type.lower():
-                body = response.read().decode("utf-8", errors="replace")[:4000]
-                raise RuntimeError(
-                    f"unexpected deepseek response content-type={content_type!r}: {body}"
-                )
+                self._raise_api_error(response, fallback_prefix="deepseek completion failed")
 
             for event_name, data in self._iter_sse(response.iter_lines()):
                 saw_any_event = True
@@ -146,7 +150,7 @@ class DeepSeekWebClient:
             json={},
         )
         response.raise_for_status()
-        payload = response.json()
+        payload = self._json_payload(response, fallback_prefix="deepseek create_chat_session failed")
         return payload["data"]["biz_data"]["chat_session"]["id"]
 
     def create_pow_challenge(self, target_path: str, referer: str | None = None) -> dict[str, Any]:
@@ -156,7 +160,10 @@ class DeepSeekWebClient:
             json={"target_path": target_path},
         )
         response.raise_for_status()
-        payload = response.json()
+        payload = self._json_payload(
+            response,
+            fallback_prefix="deepseek create_pow_challenge failed",
+        )
         return payload["data"]["biz_data"]["challenge"]
 
     def _base_headers(self, *, referer: str | None = None) -> dict[str, str]:
@@ -181,6 +188,50 @@ class DeepSeekWebClient:
 
     def _url(self, path: str) -> str:
         return f"{self.config.base_url}{path}"
+
+    def _json_payload(
+        self,
+        response: httpx.Response,
+        *,
+        fallback_prefix: str,
+    ) -> dict[str, Any]:
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            body = response.text[:4000]
+            raise RuntimeError(f"{fallback_prefix}: unexpected response: {body}") from None
+
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{fallback_prefix}: unexpected payload type")
+
+        code = payload.get("code")
+        if code not in (None, 0):
+            message = payload.get("msg") or payload.get("message") or "unknown error"
+            raise RuntimeError(f"{fallback_prefix}: code={code} msg={message}")
+
+        return payload
+
+    def _raise_api_error(
+        self,
+        response: httpx.Response,
+        *,
+        fallback_prefix: str,
+    ) -> None:
+        body = response.read().decode("utf-8", errors="replace")[:4000]
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            raise RuntimeError(
+                f"{fallback_prefix}: unexpected response content-type="
+                f"{response.headers.get('content-type', '')!r}: {body}"
+            ) from None
+
+        if isinstance(payload, dict):
+            code = payload.get("code")
+            message = payload.get("msg") or payload.get("message") or body
+            raise RuntimeError(f"{fallback_prefix}: code={code} msg={message}")
+
+        raise RuntimeError(f"{fallback_prefix}: unexpected response: {body}")
 
     def _iter_sse(self, lines: Iterable[str]) -> Iterable[tuple[str | None, str]]:
         event_name: str | None = None

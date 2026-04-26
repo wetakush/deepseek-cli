@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
@@ -17,13 +18,16 @@ if not defined DEEPSEEK_TOKEN (
 if not defined DEEPAPI_HOST set "DEEPAPI_HOST=127.0.0.1"
 if not defined DEEPAPI_PORT set "DEEPAPI_PORT=8080"
 if not defined DEEPAPI_API_KEY set "DEEPAPI_API_KEY=deepapi-local"
-if not defined ANTHROPIC_BASE_URL set "ANTHROPIC_BASE_URL=http://%DEEPAPI_HOST%:%DEEPAPI_PORT%"
-if not defined ANTHROPIC_AUTH_TOKEN set "ANTHROPIC_AUTH_TOKEN=%DEEPAPI_API_KEY%"
-if not defined DEEPAPI_MODEL set "DEEPAPI_MODEL=deepseek-reasoner"
+set "ANTHROPIC_AUTH_TOKEN=%DEEPAPI_API_KEY%"
+if not defined DEEPAPI_MODEL set "DEEPAPI_MODEL=deepseek-v4"
 if not defined DEEPAPI_ALLOW_CLIENT_THINKING_OVERRIDE set "DEEPAPI_ALLOW_CLIENT_THINKING_OVERRIDE=false"
 if not defined DEEPAPI_ALLOW_CLIENT_SEARCH_OVERRIDE set "DEEPAPI_ALLOW_CLIENT_SEARCH_OVERRIDE=false"
 if not defined DEEPAPI_STREAM_CHUNK_SIZE set "DEEPAPI_STREAM_CHUNK_SIZE=96"
 set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
+call :resolve_proxy_host
+set "ANTHROPIC_BASE_URL=http://%DEEPAPI_HOST%:%DEEPAPI_PORT%"
 
 call :choose_model
 call :apply_model_defaults
@@ -87,10 +91,19 @@ call claude %CLAUDE_MODEL_ARG% %*
 set "EXIT_CODE=%ERRORLEVEL%"
 exit /b %EXIT_CODE%
 
+:resolve_proxy_host
+if /i "%DEEPAPI_HOST%"=="localhost" set "DEEPAPI_HOST=127.0.0.1"
+if /i not "%DEEPAPI_HOST%"=="127.0.0.1" exit /b 0
+
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$all = @(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.SkipAsSource -ne $true }); $preferred = $all | Where-Object { $_.InterfaceAlias -notmatch '(?i)(tun|tap|vpn|docker|wsl|virtual|hyper-v|loopback)' }; if ($preferred.Count -gt 0) { $preferred[0].IPAddress } elseif ($all.Count -gt 0) { $all[0].IPAddress }"`) do (
+  set "DEEPAPI_HOST=%%I"
+)
+exit /b 0
+
 :choose_model
 echo.
 echo [deepapi] vyberi model
- echo   1. deepseek-reasoner (thinking)
+ echo   1. deepseek-v4 (thinking + search)
  echo   2. deepseek-chat
  echo   3. deepseek-reasoner-search (thinking + search)
  echo   4. deepseek-chat-search (search)
@@ -99,7 +112,7 @@ echo [deepapi] vyberi model
 set "MODEL_CHOICE="
 set /p MODEL_CHOICE="model^> "
 if not defined MODEL_CHOICE exit /b 0
-if /i "%MODEL_CHOICE%"=="1" set "DEEPAPI_MODEL=deepseek-reasoner" & exit /b 0
+if /i "%MODEL_CHOICE%"=="1" set "DEEPAPI_MODEL=deepseek-v4" & exit /b 0
 if /i "%MODEL_CHOICE%"=="2" set "DEEPAPI_MODEL=deepseek-chat" & exit /b 0
 if /i "%MODEL_CHOICE%"=="3" set "DEEPAPI_MODEL=deepseek-reasoner-search" & exit /b 0
 if /i "%MODEL_CHOICE%"=="4" set "DEEPAPI_MODEL=deepseek-chat-search" & exit /b 0
@@ -118,6 +131,22 @@ if /i "%DEEPAPI_MODEL%"=="deepseek-chat" (
   exit /b 0
 )
 if /i "%DEEPAPI_MODEL%"=="deepseek-reasoner-search" (
+  set "DEEPAPI_THINKING_ENABLED=true"
+  set "DEEPAPI_SEARCH_ENABLED=true"
+  exit /b 0
+)
+if /i "%DEEPAPI_MODEL%"=="deepseek-v4" (
+  set "DEEPAPI_THINKING_ENABLED=true"
+  set "DEEPAPI_SEARCH_ENABLED=true"
+  exit /b 0
+)
+if /i "%DEEPAPI_MODEL%"=="expert" (
+  set "DEEPAPI_THINKING_ENABLED=true"
+  set "DEEPAPI_SEARCH_ENABLED=true"
+  exit /b 0
+)
+if /i "%DEEPAPI_MODEL%"=="deepseek-chat-web" (
+  set "DEEPAPI_MODEL=deepseek-v4"
   set "DEEPAPI_THINKING_ENABLED=true"
   set "DEEPAPI_SEARCH_ENABLED=true"
   exit /b 0
