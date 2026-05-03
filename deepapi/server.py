@@ -129,6 +129,7 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
         payload = await request.json()
         tools = payload.get("tools") or []
         model_profile, thinking_enabled, search_enabled = _resolve_request_model(runtime, payload)
+        thinking_enabled = _safe_thinking_enabled(thinking_enabled)
         registry: ConversationRegistry = app.state.registry
         entries = bridge.render_entries(payload)
 
@@ -177,6 +178,25 @@ def build_app(config: ProxyConfig | None = None) -> FastAPI:
             )
 
         prompt = bridge.build_prompt(payload, entries=prompt_entries, continuation=continuation)
+
+        if payload.get("stream"):
+            return StreamingResponse(
+                _stream_live_response(
+                    payload=payload,
+                    state=state,
+                    registry=registry,
+                    runtime=runtime,
+                    bridge=bridge,
+                    client=app.state.client,
+                    model_profile=model_profile,
+                    thinking_enabled=thinking_enabled,
+                    search_enabled=search_enabled,
+                    prompt=prompt,
+                    entries=entries,
+                ),
+                media_type="text/event-stream",
+                headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+            )
 
         try:
             completion: DeepSeekCompletion = app.state.client.complete(
@@ -229,6 +249,145 @@ def _response_for_request(
             headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
         )
     return JSONResponse(message)
+
+
+def _stream_live_response(
+    *,
+    payload: dict[str, Any],
+    state: ConversationState,
+    registry: ConversationRegistry,
+    runtime: ProxyConfig,
+    bridge: AnthropicBridge,
+    client: DeepSeekWebClient,
+    model_profile: DeepSeekModelProfile,
+    thinking_enabled: bool,
+    search_enabled: bool,
+    prompt: str,
+    entries: list[str],
+) -> Iterable[str]:
+    tools = payload.get("tools") or []
+    text_parts: list[str] = []
+    response_message_id: int | None = None
+    streamed_text_started = False
+    buffered_prefix = ""
+    hold_for_tool_json = bool(tools)
+
+    initial_message = {
+        "id": f"msg_{uuid.uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "content": [],
+        "model": model_profile.id,
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": max(1, len(prompt) // 4), "output_tokens": 0},
+    }
+    yield _sse("message_start", {"type": "message_start", "message": initial_message})
+
+    try:
+        for chunk in client.stream_completion(
+            prompt,
+            session_id=state.chat_session_id,
+            parent_message_id=state.parent_message_id,
+            model_type=model_profile.wire_model_type if state.parent_message_id is None else None,
+            thinking_enabled=thinking_enabled,
+            search_enabled=search_enabled,
+        ):
+            if chunk.message_id is not None:
+                response_message_id = chunk.message_id
+                continue
+
+            if chunk.kind != "text" or not chunk.content:
+                continue
+
+            text_parts.append(chunk.content)
+
+            if hold_for_tool_json:
+                buffered_prefix += chunk.content
+                if _looks_like_structured_tool_output(buffered_prefix):
+                    continue
+                hold_for_tool_json = False
+
+            if not streamed_text_started:
+                streamed_text_started = True
+                yield _sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+                initial_delta = buffered_prefix or chunk.content
+                if initial_delta:
+                    yield _sse(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {"type": "text_delta", "text": initial_delta},
+                        },
+                    )
+                buffered_prefix = ""
+                continue
+
+            yield _sse(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": chunk.content},
+                },
+            )
+    except Exception as exc:
+        yield _sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "error", "stop_sequence": None},
+                "usage": {"output_tokens": 0},
+            },
+        )
+        yield _sse("message_stop", {"type": "message_stop"})
+        state.last_message = None
+        registry.activate(state)
+        raise RuntimeError(f"deepseek request failed: {exc}") from exc
+
+    completion_text = "".join(text_parts).strip()
+    content_blocks, stop_reason = bridge.parse_response(completion_text, tools=tools)
+    message = _message_object(
+        model_name=model_profile.id,
+        blocks=content_blocks,
+        stop_reason=stop_reason,
+        usage={
+            "input_tokens": max(1, len(prompt) // 4),
+            "output_tokens": max(1, len(completion_text) // 4) if completion_text else 1,
+        },
+    )
+
+    state.parent_message_id = response_message_id
+    state.history_entries = entries + [bridge.assistant_history_entry(content_blocks)]
+    state.last_message = message
+    registry.activate(state)
+
+    if streamed_text_started:
+        yield _sse("content_block_stop", {"type": "content_block_stop", "index": 0})
+    else:
+        for event in _stream_message_content_blocks(message):
+            yield event
+
+    yield _sse(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": message.get("stop_reason"),
+                "stop_sequence": message.get("stop_sequence"),
+            },
+            "usage": {"output_tokens": message.get("usage", {}).get("output_tokens", 0)},
+        },
+    )
+    yield _sse("message_stop", {"type": "message_stop"})
 
 
 def _model_object(profile: DeepSeekModelProfile) -> dict[str, Any]:
@@ -316,6 +475,12 @@ def _parse_toggle(value: Any) -> bool | None:
     return None
 
 
+def _safe_thinking_enabled(requested: bool) -> bool:
+    # DeepSeek web currently drops visible text chunks when thinking=true.
+    # Keep it off so Claude Code receives stable streamed text.
+    return False if requested else False
+
+
 def _common_prefix_len(left: list[str], right: list[str]) -> int:
     limit = min(len(left), len(right))
     index = 0
@@ -374,7 +539,30 @@ def _stream_message_events(message: dict[str, Any], *, chunk_size: int) -> Itera
     initial_message["content"] = []
     yield _sse("message_start", {"type": "message_start", "message": initial_message})
 
+    for event in _stream_message_content_blocks(message, chunk_size=chunk_size):
+        yield event
+
+    yield _sse(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": message.get("stop_reason"),
+                "stop_sequence": message.get("stop_sequence"),
+            },
+            "usage": {"output_tokens": message.get("usage", {}).get("output_tokens", 0)},
+        },
+    )
+    yield _sse("message_stop", {"type": "message_stop"})
+
+
+def _stream_message_content_blocks(
+    message: dict[str, Any],
+    *,
+    chunk_size: int = 96,
+) -> Iterable[str]:
     blocks = message.get("content", [])
+
     for index, block in enumerate(blocks):
         if block["type"] == "text":
             yield _sse(
@@ -426,18 +614,12 @@ def _stream_message_events(message: dict[str, Any], *, chunk_size: int) -> Itera
             )
             yield _sse("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    yield _sse(
-        "message_delta",
-        {
-            "type": "message_delta",
-            "delta": {
-                "stop_reason": message.get("stop_reason"),
-                "stop_sequence": message.get("stop_sequence"),
-            },
-            "usage": {"output_tokens": message.get("usage", {}).get("output_tokens", 0)},
-        },
-    )
-    yield _sse("message_stop", {"type": "message_stop"})
+
+def _looks_like_structured_tool_output(text: str) -> bool:
+    stripped = text.lstrip()
+    if not stripped:
+        return True
+    return stripped.startswith("{") or stripped.startswith("[") or stripped.startswith("```") or stripped.startswith("<")
 
 
 def _split_text(text: str, size: int = 96) -> Iterable[str]:

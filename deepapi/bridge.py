@@ -9,6 +9,7 @@ from typing import Any
 
 TOOL_RESPONSE_SCHEMA = '{"tool_uses":[{"name":"tool_name","input":{"arg":"value"}}]}'
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
+JSON_FRAGMENT_RE = re.compile(r"(\{[\s\S]*\}|\[[\s\S]*\])")
 NEW_CHAT_COMMANDS = {"new", "/new", "new chat", "новый чат", "новый", "нью"}
 TOOL_PAYLOAD_KEYS = ("tool_uses", "_uses", "uses", "tools", "toolUses", "tool_calls", "calls")
 
@@ -241,15 +242,8 @@ class AnthropicBridge:
         return "call tools whenever they are needed to complete the task correctly"
 
     def _extract_tool_payload(self, text: str) -> list[dict[str, Any]] | None:
-        candidate = text.strip()
-        fence = JSON_BLOCK_RE.search(candidate)
-        if fence:
-            candidate = fence.group(1).strip()
-
-        payload: Any
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
+        payload = self._parse_json_candidate(text)
+        if payload is None:
             return None
 
         if isinstance(payload, dict):
@@ -269,6 +263,86 @@ class AnthropicBridge:
             normalized = [item for item in normalized if item is not None]
             return normalized or None
         return None
+
+    def _parse_json_candidate(self, text: str) -> Any | None:
+        candidate = text.strip()
+        if not candidate:
+            return None
+
+        parsed = self._try_json_loads(candidate)
+        if parsed is not None:
+            return parsed
+
+        fence = JSON_BLOCK_RE.search(candidate)
+        if fence:
+            parsed = self._try_json_loads(fence.group(1).strip())
+            if parsed is not None:
+                return parsed
+
+        for fragment in self._candidate_fragments(candidate):
+            parsed = self._try_json_loads(fragment)
+            if parsed is not None:
+                return parsed
+
+        return None
+
+    def _candidate_fragments(self, text: str) -> list[str]:
+        fragments: list[str] = []
+        starts = [index for index, char in enumerate(text) if char in "[{"]
+        for start in starts:
+            fragment = self._balanced_json_slice(text, start)
+            if fragment:
+                fragments.append(fragment)
+
+        regex_fragment = JSON_FRAGMENT_RE.search(text)
+        if regex_fragment:
+            fragments.append(regex_fragment.group(1).strip())
+
+        unique: list[str] = []
+        seen: set[str] = set()
+        for fragment in fragments:
+            if fragment not in seen:
+                seen.add(fragment)
+                unique.append(fragment)
+        return unique
+
+    def _balanced_json_slice(self, text: str, start: int) -> str | None:
+        opening = text[start]
+        closing = "}" if opening == "{" else "]"
+        depth = 0
+        in_string = False
+        escaped = False
+
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                    continue
+                if char == "\\":
+                    escaped = True
+                    continue
+                if char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+            if char == opening:
+                depth += 1
+                continue
+            if char == closing:
+                depth -= 1
+                if depth == 0:
+                    return text[start : index + 1].strip()
+        return None
+
+    def _try_json_loads(self, candidate: str) -> Any | None:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
 
     def _normalize_tool_call(self, item: dict[str, Any]) -> dict[str, Any] | None:
         name = item.get("name") or item.get("tool") or item.get("tool_name")
