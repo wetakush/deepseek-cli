@@ -75,6 +75,10 @@ class AnthropicBridge:
             parts.extend(
                 [
                     "if you need a tool, respond with json only and no surrounding prose",
+                    "if the user asks to inspect files, list a directory, read content, search the codebase, check the current folder, examine a script, or verify anything from the workspace, call a tool immediately instead of saying you will do it",
+                    "when a tool is required to answer correctly, do not ask for permission, do not narrate your plan, and do not say 'I will look' first",
+                    "for requests like 'look at the directory', 'see files', 'what is in this folder', 'check this script', or 'read this file', your first reply must be a tool call",
+                    "after tool results arrive, then answer normally or call the next needed tool",
                     f"use exactly this schema: {TOOL_RESPONSE_SCHEMA}",
                     'the top-level key must be exactly "tool_uses", never "_uses", "uses", "tools", or any other key',
                     "return compact valid json with double quotes",
@@ -82,7 +86,7 @@ class AnthropicBridge:
                     "tool input must be valid json and match the schema as closely as possible",
                     "if you do not need a tool, respond with plain text only",
                     "never invent tool results or say you executed a tool yourself",
-            ]
+                ]
             )
             parts.append(self._tool_choice_instruction(request.get("tool_choice")))
             tool_view = [
